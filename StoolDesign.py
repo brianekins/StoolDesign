@@ -54,7 +54,7 @@ class CutSeatCommandExecuteHandler(adsk.core.CommandEventHandler):
             info = 'Submitted by: ' + name + ', Email: ' + email
             
             job = tool.submit_job(gCode, 'stool.nc', 'Stool for ' + name , info)
-            _ui.messageBox('Submitted Job: ' + str(job))
+            _ui.messageBox('Job submitted.')
             tool.show_job_manager()
             
             return True
@@ -108,17 +108,16 @@ class CustSeatValidateInputsHandler(adsk.core.ValidateInputsEventHandler):
             eventArgs.areInputsValid = False
 
 
-                        
 def generateGCode():
     try:
         des = adsk.fusion.Design.cast(_app.activeProduct)
     
-        # Create the file.
+        # Begin creating the g-code data.
         gCode = ''
         
         # Write the header.
         gCode += 'g20\n'        # set to inches
-        gCode += 'g1 f60\n'     # set the feed rate.
+        gCode += 'g1 f120\n'     # set the feed rate.
         gCode += 'g0 z' + toInches(_retractHeight) + '\n'    # lift to safe Z
         gCode += 'm4\n'         # spindle on
         gCode += 'g4 p2\n'      # a pause to allow spindle to spin up   
@@ -128,51 +127,57 @@ def generateGCode():
         for sk in des.rootComponent.sketches:
             if sk.isVisible:
                 attrib = sk.attributes.itemByName('adsk-Seat', 'SeatSketch')
-                if attrib:
+                if attrib:   
                     #**** Iterate through the lines in the sketch.
                     for cuttingDepth in _cuttingDepths:
                         lastPnt = adsk.core.Point3D.create(-1000,-1000,-1000)
                         skLine = adsk.fusion.SketchLine.cast(None)
                         for skLine in sk.sketchCurves.sketchLines:
-                            startPnt = skLine.startSketchPoint.geometry
-                            endPnt = skLine.endSketchPoint.geometry
-                            if startPnt.isEqualTo(lastPnt):
-                                gCode += 'g1 x' + toInches(endPnt.x) + ' y' + toInches(endPnt.y) + '\n'
-                                lastPnt = endPnt
-                            else:
-                                gCode += 'g0 z' + toInches(_retractHeight) + '\n'    # lift to safe Z
-                                gCode += 'g0 x' + toInches(startPnt.x) + ' y' + toInches(startPnt.y) + '\n'
-                                gCode += 'g1 z' + toInches(cuttingDepth) + '\n'
-                                gCode += 'g1 x' + toInches(endPnt.x) + ' y' + toInches(endPnt.y) + '\n'
-                                lastPnt = endPnt
-                                
-                        gCode += 'g0 z' + toInches(_retractHeight) + '\n'    # lift to safe Z
-                                                
-                    #**** Iterate through the circles in the sketch.
-                    for circ in sk.sketchCurves.sketchCircles:
-                        # Get a line approximation of the circle.
-                        circGeom = adsk.core.Circle3D.cast(circ.geometry)                    
-                        (returnValue, vertexCoordinates) = circGeom.evaluator.getStrokes(0, math.pi * 2, _strokeTol)
-                        
-                        # Create the cutting path at each cut depth.
-                        for cuttingDepth in _cuttingDepths:
-                            firstPnt = True
-                            for coord in vertexCoordinates:
-                                # Write the point to the file.
-                                if firstPnt:
-                                    gCode += 'g0 x' + toInches(coord.x) + ' y' + toInches(coord.y) + '\n'
-                                    gCode += 'g1 z' + toInches(cuttingDepth) + '\n'
-                                    firstPnt = False
+                            if not skLine.isConstruction:
+                                startPnt = skLine.startSketchPoint.geometry
+                                endPnt = skLine.endSketchPoint.geometry
+                                if startPnt.isEqualTo(lastPnt):
+                                    gCode += ('g1 x' + toInches(endPnt.x) + ' y' + 
+                                             toInches(endPnt.y) + '\n')
+                                    lastPnt = endPnt
                                 else:
-                                    gCode += 'g1 x' + toInches(coord.x) + ' y' + toInches(coord.y) + '\n'
-                                    
-                            gCode += 'g0 z' + toInches(_retractHeight) + '\n'    # lift to safe Zs
-    
-                    # Iterate through the splines in the sketch.                
+                                    gCode += 'g0 z' + toInches(_retractHeight) + '\n'
+                                    gCode += ('g0 x' + toInches(startPnt.x) + ' y' + 
+                                             toInches(startPnt.y) + '\n')
+                                    gCode += 'g1 z' + toInches(cuttingDepth) + '\n'
+                                    gCode += ('g1 x' + toInches(endPnt.x) + ' y' + 
+                                             toInches(endPnt.y) + '\n')
+                                    lastPnt = endPnt
+                        
+                        # Retract to safe Z
+                        gCode += 'g0 z' + toInches(_retractHeight) + '\n'    
+                                                
+                    #**** Iterate through all other curve types.
+                    curve = adsk.fusion.SketchCurve.cast(None)
+                    for curve in sk.sketchCurves:
+                        if curve.objectType != adsk.fusion.SketchLine.classType():
+                            # Get a line approximation of the circle.
+                            eval = adsk.core.CurveEvaluator3D.cast(curve.geometry.evaluator)
+                            (returnValue, startParameter, endParameter) = eval.getParameterExtents()
+                            (returnValue, vertexCoordinates) = eval.getStrokes(startParameter, endParameter, _strokeTol)
+                            
+                            # Create the cutting path at each cut depth.
+                            for cuttingDepth in _cuttingDepths:
+                                firstPnt = True
+                                for coord in vertexCoordinates:
+                                    # Write the point to the file.
+                                    if firstPnt:
+                                        gCode += 'g0 x' + toInches(coord.x) + ' y' + toInches(coord.y) + '\n'
+                                        gCode += 'g1 z' + toInches(cuttingDepth) + '\n'
+                                        firstPnt = False
+                                    else:
+                                        gCode += 'g1 x' + toInches(coord.x) + ' y' + toInches(coord.y) + '\n'
+                                        
+                                gCode += 'g0 z' + toInches(_retractHeight) + '\n'    # lift to safe Zs
     
         # Write the end of the data.
         gCode += 'm5\n'         # turn off spindle
-        gCode += 'g0 x0 y0\n'   # Go to home.
+        gCode += 'g0 x24 y0\n'   # Go to home.
         gCode += 'm30\n'        # End of Program
         
         return gCode
@@ -182,80 +187,6 @@ def generateGCode():
         
         return ''
 
-
-def processSketchesOld(gCodeFilename):
-    try:
-        des = adsk.fusion.Design.cast(_app.activeProduct)
-    
-        # Create the file.
-        gCodeFile = open(gCodeFilename, 'w')
-        
-        # Write the header.
-        gCodeFile.write('g20\n')        # set to inches
-        gCodeFile.write('g1 f60\n')
-        gCodeFile.write('g0 z' + toInches(_retractHeight) + '\n')    # lift to safe Z
-        gCodeFile.write('m4\n')         # spindle on
-        gCodeFile.write('g4 p2\n')      # a pause to allow spindle to spin up   
-    
-        # Get the visible design sketches.
-        sk = adsk.fusion.Sketch.cast(None)
-        for sk in des.rootComponent.sketches:
-            if sk.isVisible:
-                attrib = sk.attributes.itemByName('adsk-Seat', 'SeatSketch')
-                if attrib:
-                    #**** Iterate through the lines in the sketch.
-                    for cuttingDepth in _cuttingDepths:
-                        lastPnt = adsk.core.Point3D.create(-1000,-1000,-1000)
-                        skLine = adsk.fusion.SketchLine.cast(None)
-                        for skLine in sk.sketchCurves.sketchLines:
-                            startPnt = skLine.startSketchPoint.geometry
-                            endPnt = skLine.endSketchPoint.geometry
-                            if startPnt.isEqualTo(lastPnt):
-                                gCodeFile.write('g1 x' + toInches(endPnt.x) + ' y' + toInches(endPnt.y) + '\n')
-                                lastPnt = endPnt
-                            else:
-                                gCodeFile.write('g0 z' + toInches(_retractHeight) + '\n')    # lift to safe Z
-                                gCodeFile.write('g0 x' + toInches(startPnt.x) + ' y' + toInches(startPnt.y) + '\n')
-                                gCodeFile.write('g1 z' + toInches(cuttingDepth) + '\n')
-                                gCodeFile.write('g1 x' + toInches(endPnt.x) + ' y' + toInches(endPnt.y) + '\n')
-                                lastPnt = endPnt
-                                
-                        gCodeFile.write('g0 z' + toInches(_retractHeight) + '\n')    # lift to safe Z
-                                                
-                    #**** Iterate through the circles in the sketch.
-                    for circ in sk.sketchCurves.sketchCircles:
-                        # Get a line approximation of the circle.
-                        circGeom = adsk.core.Circle3D.cast(circ.geometry)                    
-                        (returnValue, vertexCoordinates) = circGeom.evaluator.getStrokes(0, math.pi * 2, _strokeTol)
-                        
-                        # Create the cutting path at each cut depth.
-                        for cuttingDepth in _cuttingDepths:
-                            firstPnt = True
-                            for coord in vertexCoordinates:
-                                # Write the point to the file.
-                                if firstPnt:
-                                    gCodeFile.write('g0 x' + toInches(coord.x) + ' y' + toInches(coord.y) + '\n')
-                                    gCodeFile.write('g1 z' + toInches(cuttingDepth) + '\n')
-                                    firstPnt = False
-                                else:
-                                    gCodeFile.write('g1 x' + toInches(coord.x) + ' y' + toInches(coord.y) + '\n')
-                                    
-                            gCodeFile.write('g0 z' + toInches(_retractHeight) + '\n')    # lift to safe Zs
-    
-                    # Iterate through the splines in the sketch.                
-    
-        # Write the end of the data.
-        gCodeFile.write('m5\n')         # turn off spindle
-        gCodeFile.write('g0 x0 y0\n')   # Go to home.
-        gCodeFile.write('m30\n')        # End of Program
-        gCodeFile.close()
-        return True
-    except:
-        if _ui:
-            _ui.messageBox('Failed:\n{}'.format(traceback.format_exc()))
-        
-        return False
-        
 
 def toInches(centimeterValue):
     return '{0:.4f}'.format(centimeterValue / 2.54)
@@ -273,7 +204,89 @@ class NewSeatCommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
         modelFile = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'models/Stool.f3d')
         
         impOptions = _app.importManager.createFusionArchiveImportOptions(modelFile)
-        newDoc = _app.importManager.importToNewDocument(impOptions)
+        newDoc = _app.documents.add(adsk.core.DocumentTypes.FusionDesignDocumentType)
+        des = newDoc.products.itemByProductType('DesignProductType')
+        _app.importManager.importToTarget(impOptions, des.rootComponent)            
+        
+
+
+#******************* Sin Curve ***********************************************
+
+# Event handler for the mesh design command created event.
+class SinCurveDesignCommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
+    def __init__(self):
+        super().__init__()
+    def notify(self, args):
+        try:
+            eventArgs = adsk.core.CommandCreatedEventArgs.cast(args)
+            cmd = eventArgs.command
+            
+            # Connect to the execute preview event.
+            onExecutePreview = SinCurveDesignCommandExecutePreviewHandler()
+            cmd.executePreview.add(onExecutePreview)
+            _handlers.append(onExecutePreview)
+    
+            # Create the command inputs.        
+            inputs = cmd.commandInputs
+            
+            frequencySliderInput = inputs.addIntegerSliderCommandInput('frequency', 'Frequency', 1, 10, False)
+            frequencySliderInput.valueOne = 4
+            
+            amplitudeSliderInput = inputs.addIntegerSliderCommandInput('amplitude', 'Amplitude', 1, 100, False)
+            amplitudeSliderInput.valueOne = 40
+
+            offsetInput = inputs.addIntegerSliderCommandInput('yOffset', 'Offset', 1, 100, False)
+            offsetInput.valueOne = 50
+        except:
+            if _ui:
+                _ui.messageBox('Failed:\n{}'.format(traceback.format_exc()))
+
+        
+# Event handler for the execute preview event.
+#def sinCurve(sketch, amplitude, frequency, yOffset):
+class SinCurveDesignCommandExecutePreviewHandler(adsk.core.CommandEventHandler):
+    def __init__(self):
+        super().__init__()
+    def notify(self, args):
+        try:
+            eventArgs = adsk.core.CommandEventArgs.cast(args)
+            eventArgs.isValidResult = True
+    
+            # Get the current values from the dialog.
+            inputs = eventArgs.command.commandInputs
+            
+            frequency = inputs.itemById('frequency').valueOne 
+            amplitude = (inputs.itemById('amplitude').valueOne * 0.01)
+            amplitude = amplitude * (_seatWidth * 0.5)
+            yOffset = (inputs.itemById('yOffset').valueOne * 0.01) * _seatWidth 
+    
+            des = adsk.fusion.Design.cast(_app.activeProduct)
+            sk = des.rootComponent.sketches.add(des.rootComponent.xYConstructionPlane)
+            sk.areProfilesShown = False
+            sk.name = 'Sin Curve'
+            sk.attributes.add('adsk-Seat', 'SeatSketch', '')
+            
+            x = 0
+            angle = 0
+            pntsPerFrequency = 4
+            pnts = adsk.core.ObjectCollection.create()
+            for i in range(0, frequency):
+                for j in range(0, pntsPerFrequency):
+                    y = math.sin(angle)
+                    y = (y * amplitude) + yOffset
+                    angle += math.pi/(pntsPerFrequency/2)
+                    pnts.add(adsk.core.Point3D.create(y,x,0))
+                    x += _seatHeight / (frequency * pntsPerFrequency)
+        
+            y = math.sin(angle)
+            y = (y * amplitude) + yOffset
+            pnts.add(adsk.core.Point3D.create(y,x,0))
+                    
+            sk.sketchCurves.sketchFittedSplines.add(pnts) 
+        except:
+            if _ui:
+                _ui.messageBox('Failed:\n{}'.format(traceback.format_exc()))
+
 
 
 #************** Patterned polygons Seat Design ********************************
@@ -938,8 +951,6 @@ class RectanglesDesignCommandExecutePreviewHandler(adsk.core.CommandEventHandler
     def notify(self, args):
         sk = None
         try:
-#def randomRectangles(sketch, numRectangles, allowOverlap):
-
             eventArgs = adsk.core.CommandEventArgs.cast(args)
             eventArgs.isValidResult = True
             
@@ -1048,12 +1059,17 @@ def run(context):
         rectanglesDesignCmdDef.commandCreated.add(rectanglesDesignCommandCreated)
         _handlers.append(rectanglesDesignCommandCreated)
 
-        patternedPolygonDesignCmdDef = _ui.commandDefinitions.addButtonDefinition('adsk-PatternedPolygonDesign', 'Polygons', 'Create random rectangles seat design.', 'resources/RectanglesDesign')
-        patternedPolygonDesignCmdDef.toolClipFilename = 'resources/rectanglesToolclip.png'
-        patternedPolygonDesignCommandCreated = PatternedPolygonDesignCommandCreatedHandler()
-        patternedPolygonDesignCmdDef.commandCreated.add(patternedPolygonDesignCommandCreated)
-        _handlers.append(patternedPolygonDesignCommandCreated)
-        
+        sinCurveDesignCmdDef = _ui.commandDefinitions.addButtonDefinition('adsk-SinCurveDesign', 'Sin Curve', 'Create a sin curve seat design.', 'resources/SinCurveDesign')
+        sinCurveDesignCmdDef.toolClipFilename = 'resources/sinToolclip.png'
+        sinCurveDesignCommandCreated = SinCurveDesignCommandCreatedHandler()
+        sinCurveDesignCmdDef.commandCreated.add(sinCurveDesignCommandCreated)
+        _handlers.append(sinCurveDesignCommandCreated)
+
+#        patternedPolygonDesignCmdDef = _ui.commandDefinitions.addButtonDefinition('adsk-PatternedPolygonDesign', 'Polygons', 'Create random rectangles seat design.', 'resources/RectanglesDesign')
+#        patternedPolygonDesignCmdDef.toolClipFilename = 'resources/rectanglesToolclip.png'
+#        patternedPolygonDesignCommandCreated = PatternedPolygonDesignCommandCreatedHandler()
+#        patternedPolygonDesignCmdDef.commandCreated.add(patternedPolygonDesignCommandCreated)
+#        _handlers.append(patternedPolygonDesignCommandCreated)
         
         # Get the MODEL workspace.
         modelWS = _ui.workspaces.itemById('FusionSolidEnvironment')
@@ -1074,10 +1090,13 @@ def run(context):
         circlesCtrl.isPromoted = True
         rectanglesCtrl = seatPanel.controls.addCommand(rectanglesDesignCmdDef)
         rectanglesCtrl.isPromoted = True
+        sinCurveCtrl = seatPanel.controls.addCommand(sinCurveDesignCmdDef)
+        sinCurveCtrl.isPromoted = True
         cutCtrl = seatPanel.controls.addCommand(cutSeatCmdDef)
         cutCtrl.isPromoted = True
-        polygonCtrl = seatPanel.controls.addCommand(patternedPolygonDesignCmdDef)
-        polygonCtrl.isPromoted = True
+        
+#        polygonCtrl = seatPanel.controls.addCommand(patternedPolygonDesignCmdDef)
+#        polygonCtrl.isPromoted = True
     except:
         if _ui:
             _ui.messageBox('Failed:\n{}'.format(traceback.format_exc()))
@@ -1114,9 +1133,13 @@ def stop(context):
         if rectanglesDesignCmdDef:
             rectanglesDesignCmdDef.deleteMe()
 
-        patternedPolygonDesignCmdDef = _ui.commandDefinitions.itemById('adsk-PatternedPolygonDesign')
-        if patternedPolygonDesignCmdDef:
-            patternedPolygonDesignCmdDef.deleteMe()
+        sinCurveDesignCmdDef = _ui.commandDefinitions.itemById('adsk-SinCurveDesign')
+        if sinCurveDesignCmdDef:
+            sinCurveDesignCmdDef.deleteMe()
+
+#        patternedPolygonDesignCmdDef = _ui.commandDefinitions.itemById('adsk-PatternedPolygonDesign')
+#        if patternedPolygonDesignCmdDef:
+#            patternedPolygonDesignCmdDef.deleteMe()
     except:
         if _ui:
             _ui.messageBox('Failed:\n{}'.format(traceback.format_exc()))
