@@ -8,7 +8,6 @@ _app = adsk.core.Application.get()
 _ui  = _app.userInterface
 _handlers = []
 
-_debug = False
 
 # All values are in centimeters.
 _seatWidth = 21
@@ -27,14 +26,22 @@ class CutSeatCommandExecuteHandler(adsk.core.CommandEventHandler):
             eventArgs = adsk.core.CommandEventArgs.cast(args)
             inputs = eventArgs.command.commandInputs
 
-            gCode = generateGCode()        
+            gCode = generateGCode()
+
+            description = inputs.itemById('descriptionInput').value
+            isDebug = inputs.itemById('debugInput').value
+            
+            text_file = open("C:/Temp/g-codeTest.txt", "w")
+            text_file.write(gCode)
+            text_file.close()
+            
             if gCode == '':
                 return False
                 
             # Get list of tools on the network
             from .Modules import fabmo    
             try:
-                tools = fabmo.find_tools(debug=_debug)
+                tools = fabmo.find_tools(debug=isDebug)
             except:
                 _ui.messageBox('Unable to use the Fabmo tools.  Aborting.')
                 return False
@@ -49,11 +56,8 @@ class CutSeatCommandExecuteHandler(adsk.core.CommandEventHandler):
         
             tool = tools[0]
             
-            name = inputs.itemById('nameInput').value
-            email = inputs.itemById('emailInput').value
-            info = 'Submitted by: ' + name + ', Email: ' + email
+            job = tool.submit_job(gCode, 'stool.nc', 'Fusion 360 design. ' + description)
             
-            job = tool.submit_job(gCode, 'stool.nc', 'Stool for ' + name , info)
             _ui.messageBox('Job submitted.')
             tool.show_job_manager()
             
@@ -76,7 +80,7 @@ class CutSeatCommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
             eventArgs.command.execute.add(onExecute)
             _handlers.append(onExecute)
             
-            onValidateInputs = CustSeatValidateInputsHandler()
+            onValidateInputs = CutSeatValidateInputsHandler()
             eventArgs.command.validateInputs.add(onValidateInputs)
             _handlers.append(onValidateInputs)
     
@@ -85,30 +89,177 @@ class CutSeatCommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
             textBoxInput = inputs.addTextBoxCommandInput('messageInput', '', 'This will submit the seat model to the NC mill.', 2, True)
             textBoxInput.isFullWidth = True
             
-            nameInput = inputs.addStringValueInput('nameInput', 'Name', '')
-            emailInput = inputs.addStringValueInput('emailInput', 'Email', '')
+            nameInput = inputs.addStringValueInput('descriptionInput', 'Description', '')
+            debugInput = inputs.addBoolValueInput('debugInput', 'Debug Mode', True, '', False)
         except:
             if _ui:
                 _ui.messageBox('Failed:\n{}'.format(traceback.format_exc()))
             
 
 
-class CustSeatValidateInputsHandler(adsk.core.ValidateInputsEventHandler):
+class CutSeatValidateInputsHandler(adsk.core.ValidateInputsEventHandler):
     def __init__(self):
         super().__init__()
     def notify(self, args):
         eventArgs = adsk.core.ValidateInputsEventArgs.cast(args)
         inputs = eventArgs.inputs
         
-        eventArgs.areInputsValid = True
-        if inputs.itemById('nameInput').value == '':
-            eventArgs.areInputsValid = False
-
-        if inputs.itemById('emailInput').value == '':
-            eventArgs.areInputsValid = False
+#        eventArgs.areInputsValid = True
+#        if inputs.itemById('nameInput').value == '':
+#            eventArgs.areInputsValid = False
+#
+#        if inputs.itemById('emailInput').value == '':
+#            eventArgs.areInputsValid = False
 
 
 def generateGCode():
+    try:
+        des = adsk.fusion.Design.cast(_app.activeProduct)
+
+        ### Get all of the sketch geometry as polylines for sketches that are
+        ### based on the x-y construction plane, are visuble and have "cut" in the name.      
+        polyLines = []
+        sk = adsk.fusion.Sketch.cast(None)
+        for sk in des.rootComponent.sketches:
+            # Get the visible design sketches.
+            if sk.isVisible:
+                # Check the sketch name contains "cut"
+                if sk.name.upper().find('CUT') != -1:
+                    # Iterate over all of the curves in the sketch.
+                    curve = adsk.fusion.SketchCurve.cast(None)
+                    for curve in sk.sketchCurves:
+                        if not curve.isConstruction:
+                            # Get a line approximation of the curve.
+                            eval = adsk.core.CurveEvaluator3D.cast(curve.geometry.evaluator)
+                            (returnValue, startParameter, endParameter) = eval.getParameterExtents()
+                            (returnValue, vertexCoordinates) = eval.getStrokes(startParameter, endParameter, _strokeTol)
+                            curvePoly = polyLine(vertexCoordinates)
+    
+                            if len(polyLines) == 0:
+                                polyLines.append(curvePoly)
+                            else:
+                                # Iterate over all existing polylines to see if this connects.
+                                didConnect = False
+                                for poly in polyLines:
+                                    didConnect = poly.connect(curvePoly)
+                                    if didConnect:
+                                        break
+                                if not didConnect:
+                                    polyLines.append(curvePoly)
+
+                    ###### Iterate through all text.
+                    text = adsk.fusion.SketchText.cast(None)
+                    for text in sk.sketchTexts:
+                        textCurves = text.asCurves()
+                        for textCurve in textCurves:
+                            # Get a line approximation of the curve.
+                            eval = adsk.core.CurveEvaluator3D.cast(textCurve.evaluator)
+                            (returnValue, startParameter, endParameter) = eval.getParameterExtents()
+                            (returnValue, vertexCoordinates) = eval.getStrokes(startParameter, endParameter, _strokeTol)
+                            curvePoly = polyLine(vertexCoordinates)
+
+                            if len(polyLines) == 0:
+                                polyLines.append(curvePoly)
+                            else:
+                                # Iterate over all existing polylines to see if this connects.
+                                didConnect = False
+                                for poly in polyLines:
+                                    didConnect = poly.connect(curvePoly)
+                                    if didConnect:
+                                        break
+                                if not didConnect:
+                                    polyLines.append(curvePoly)
+
+        # Continue to try to reconnect the curves until nothing can be connected.
+        connected = True
+        while connected:
+            connected = False
+            for poly1 in polyLines:
+                index = -1
+                for poly2 in polyLines:
+                    index += 1
+                    if poly1 and poly2:
+                        if not poly1 is poly2:
+                            didConnect = poly1.connect(poly2)
+                            if didConnect:
+                                polyLines[index] = None
+                                connected = True
+                                
+        # Clean up the polyline list.
+        for i in range(len(polyLines)-1, -1, -1):
+            if not polyLines[i]:
+                polyLines.pop(i)
+                
+        # Reorder and reverse the polylines to create the optimal cutting path.
+        for i in range(0, len(polyLines)-1):
+            closestPoly = -1
+            closestDist = 500000
+            isStart = True
+            lastPoint = polyLines[i].endPoint()
+            for j in range(i+1, len(polyLines)):
+                dist = polyLines[j].startPoint().distanceTo(lastPoint)
+                if dist < closestDist:
+                    closestDist = dist
+                    closestPoly = j
+                    isStart = True
+                    
+                dist = polyLines[j].endPoint().distanceTo(lastPoint)
+                if dist < closestDist:
+                    closestDist = dist
+                    closestPoly = j
+                    isStart = False
+                    
+            if not isStart:
+                polyLines[closestPoly].reverse()
+                
+            if polyLines[closestPoly] != polyLines[i+1]:
+                tempPoly = polyLines[i+1]
+                polyLines[i+1] = polyLines[closestPoly]
+                polyLines[closestPoly] = tempPoly
+                
+        ###### Begin creating the g-code data.        
+        # Write the header.
+        gCode = ''
+        gCode += 'g20\n'        # set to inches
+        gCode += 'g1 f120\n'     # set the feed rate.
+        gCode += 'g0 z' + toInches(_retractHeight) + '\n'    # lift to safe Z
+        gCode += 'm4\n'         # spindle on
+        gCode += 'g4 p2\n'      # a pause to allow spindle to spin up   
+
+        # Do a pass for each cutting depth.        
+        for cuttingDepth in _cuttingDepths:
+            for poly in polyLines:
+                firstPoint = True
+                for point in poly.points:
+                    if firstPoint:
+                        # Move to start of polyline and then drop down.
+                        gCode += ('g0 x' + toInches(point.x) + ' y' + 
+                                 toInches(point.y) + '\n')
+                        gCode += 'g1 z' + toInches(cuttingDepth) + '\n'
+                        gCode += ('g1 x' + toInches(point.x) + ' y' + 
+                                 toInches(point.y) + '\n')
+                        firstPoint = False
+                    else:
+                        gCode += ('g1 x' + toInches(point.x) + ' y' + 
+                                 toInches(point.y) + '\n')
+                
+                # Retract to safe Z
+                gCode += 'g0 z' + toInches(_retractHeight) + '\n'
+                    
+        # Write the end of the data.
+        gCode += 'm5\n'         # turn off spindle
+        gCode += 'g0 x24 y0\n'   # Go to home.
+        gCode += 'm30\n'        # End of Program
+        
+        return gCode
+    except:
+        if _ui:
+            _ui.messageBox('Failed:\n{}'.format(traceback.format_exc()))
+        
+        return ''
+
+
+def generateGCodeOld():
     try:
         des = adsk.fusion.Design.cast(_app.activeProduct)
     
@@ -188,9 +339,106 @@ def generateGCode():
         return ''
 
 
+class polyLine():
+    def __init__(self, points = None):
+        self.isClosed = False
+        if points:
+            self.points = list(points)
+            if self.startPoint().isEqualTo(self.endPoint()):
+                self.isClosed = True
+        else:
+            self.points = []
+
+    def startPoint(self):
+        if self.pointCount() == 0:
+            return None
+        else:
+            return self.points[0]
+        
+    def endPoint(self):
+        if self.pointCount() == 0:
+            return None
+        else:
+            return self.points[self.pointCount()-1]
+            
+    def pointCount(self):
+        return len(self.points)
+            
+    def points(self):
+        return self.points
+        
+    def asString(self):
+        result = ''
+        for point in self.points:
+            result += str(point.x) + ', ' + str(point.y) + ', ' + str(point.z) + '\n'
+        return result
+        
+    def reverse(self):
+        self.points.reverse()
+
+    def connects(self, poly):
+        if not self.isClosed:
+            thisStart = adsk.core.Point3D.cast(self.startPoint())
+            thisEnd = adsk.core.Point3D.cast(self.endPoint())
+            
+            otherStart = poly.startPoint()
+            otherEnd = poly.endPoint()
+            
+            if thisStart.isEqualTo(otherStart):
+                return True
+            elif thisStart.isEqualTo(otherEnd):
+                return True
+            elif thisEnd.isEqualTo(otherStart):
+                return True
+            elif thisEnd.isEqualTo(otherEnd):
+                return True
+        return False                
+       
+    def connect(self, poly):
+        isConnected = False            
+        if not self.isClosed:
+            thisStart = adsk.core.Point3D.cast(self.startPoint())
+            thisEnd = adsk.core.Point3D.cast(self.endPoint())
+            
+            otherStart = poly.startPoint()
+            otherEnd = poly.endPoint()
+
+            if thisStart.isEqualTo(otherStart):
+                # Reverse the other polyline and add it to the front of the existing polyline.
+                tempList = list(poly.points)
+                tempList.pop(0)
+                tempList.reverse()
+                self.points = tempList + self.points
+                isConnected = True
+            elif thisStart.isEqualTo(otherEnd):
+                # Add the other polyline to the front of this one maintaining
+                # the same point order of the other polyline.
+                tempList = list(poly.points)
+                tempList.pop(len(tempList)-1)
+                self.points = tempList + self.points
+                isConnected = True
+            elif thisEnd.isEqualTo(otherStart):
+                tempList = list(poly.points)
+                tempList.pop(0)
+                self.points.extend(tempList)
+                isConnected = True
+            elif thisEnd.isEqualTo(otherEnd):
+                tempList = list(poly.points)
+                tempList.pop(len(tempList)-1)
+                tempList.reverse()
+                self.points.extend(tempList)
+                isConnected = True
+
+        # Check to see if the polyline is closed.
+        if isConnected:
+            if self.startPoint().isEqualTo(self.endPoint()):
+                self.isClosed = True
+
+        return isConnected
+        
+
 def toInches(centimeterValue):
     return '{0:.4f}'.format(centimeterValue / 2.54)
-
 
 
 # Event handler for the New Seat command created event.
@@ -263,8 +511,7 @@ class SinCurveDesignCommandExecutePreviewHandler(adsk.core.CommandEventHandler):
             des = adsk.fusion.Design.cast(_app.activeProduct)
             sk = des.rootComponent.sketches.add(des.rootComponent.xYConstructionPlane)
             sk.areProfilesShown = False
-            sk.name = 'Sin Curve'
-            sk.attributes.add('adsk-Seat', 'SeatSketch', '')
+            sk.name = 'Sin Curve (Cut)'
             
             x = 0
             angle = 0
@@ -365,8 +612,7 @@ class PatternedPolygonDesignCommandExecutePreviewHandler(adsk.core.CommandEventH
         des = adsk.fusion.Design.cast(_app.activeProduct)
         sk = des.rootComponent.sketches.add(des.rootComponent.xYConstructionPlane)
         sk.areProfilesShown = False
-        sk.name = 'Mesh'
-        sk.attributes.add('adsk-Seat', 'SeatSketch', '')
+        sk.name = 'Mesh (Cut)'
         sk.isComputeDeferred = True
 
         random.seed()
@@ -499,7 +745,7 @@ class MeshDesignCommandExecutePreviewHandler(adsk.core.CommandEventHandler):
         des = adsk.fusion.Design.cast(_app.activeProduct)
         sk = des.rootComponent.sketches.add(des.rootComponent.xYConstructionPlane)
         sk.areProfilesShown = False
-        sk.name = 'Mesh'
+        sk.name = 'Mesh (Cut)'
         sk.attributes.add('adsk-Seat', 'SeatSketch', '')
         sk.isComputeDeferred = True
 
@@ -723,9 +969,8 @@ class FlowerDesignCommandExecutePreviewHandler(adsk.core.CommandEventHandler):
             # Create a new sketch.
             des = adsk.fusion.Design.cast(_app.activeProduct)
             sk = des.rootComponent.sketches.add(des.rootComponent.xYConstructionPlane)
-            sk.attributes.add('adsk-Seat', 'SeatSketch', '')
             sk.areProfilesShown = False
-            sk.name = 'Flower'
+            sk.name = 'Flower (Cut)'
             sk.isComputeDeferred = True
 
             # Save values in an attribute.
@@ -854,8 +1099,7 @@ class CirclesDesignCommandExecutePreviewHandler(adsk.core.CommandEventHandler):
             des = adsk.fusion.Design.cast(_app.activeProduct)
             sk = des.rootComponent.sketches.add(des.rootComponent.xYConstructionPlane)
             sk.areProfilesShown = False
-            sk.name = 'Circles'
-            sk.attributes.add('adsk-Seat', 'SeatSketch', '')
+            sk.name = 'Circles (Cut)'
             sk.isComputeDeferred = True
     
             # Save the width to use as the default for all stool commands.
@@ -967,8 +1211,7 @@ class RectanglesDesignCommandExecutePreviewHandler(adsk.core.CommandEventHandler
             des = adsk.fusion.Design.cast(_app.activeProduct)
             sk = des.rootComponent.sketches.add(des.rootComponent.xYConstructionPlane)
             sk.areProfilesShown = False
-            sk.name = 'Rectangles'
-            sk.attributes.add('adsk-Seat', 'SeatSketch', '')
+            sk.name = 'Rectangles (Cut)'
             sk.isComputeDeferred = True
     
             # Save the width to use as the default for all stool commands.
