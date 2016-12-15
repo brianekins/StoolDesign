@@ -28,7 +28,12 @@ class CutSeatCommandExecuteHandler(adsk.core.CommandEventHandler):
 
             gCode = generateGCode()
 
+            name = inputs.itemById('nameInput').value
+            if name == '':
+                name = None
             description = inputs.itemById('descriptionInput').value
+            if description == '':
+                description = None
             isDebug = inputs.itemById('debugInput').value
             
             text_file = open("C:/Temp/g-codeTest.txt", "w")
@@ -56,7 +61,7 @@ class CutSeatCommandExecuteHandler(adsk.core.CommandEventHandler):
         
             tool = tools[0]
             
-            job = tool.submit_job(gCode, 'stool.nc', 'Fusion 360 design. ' + description)
+            job = tool.submit_job(gCode, 'stool.nc', name, description)
             
             _ui.messageBox('Job submitted.')
             tool.show_job_manager()
@@ -89,7 +94,8 @@ class CutSeatCommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
             textBoxInput = inputs.addTextBoxCommandInput('messageInput', '', 'This will submit the seat model to the NC mill.', 2, True)
             textBoxInput.isFullWidth = True
             
-            nameInput = inputs.addStringValueInput('descriptionInput', 'Description', '')
+            nameInput = inputs.addStringValueInput('nameInput', 'Name', '')
+            descriptionInput = inputs.addStringValueInput('descriptionInput', 'Description', '')
             debugInput = inputs.addBoolValueInput('debugInput', 'Debug Mode', True, '', False)
         except:
             if _ui:
